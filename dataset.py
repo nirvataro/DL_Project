@@ -1,67 +1,83 @@
-import spacy as spacy
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import random_split
-import pandas as pd
 import torch
 from torchtext.legacy.data import Field, TabularDataset, BucketIterator, NestedField
 import spacy
+import re
 
-data_file = "data/youtube_dataset.csv"
+
 
 
 class CommentDataset(Dataset):
     def __init__(self, csv_file):
         super(CommentDataset, self).__init__()
-        self._data = pd.read_csv(csv_file, error_bad_lines=False)
-        self._comments = self._data['Comment']
-        self._comments = self._comments.values.tolist()
-        self._other_details = self._data[['Video Name', 'Channel Name', 'User Name', 'Date']].values.tolist()
-        self._likes = self._data['Likes'].values.tolist()
 
-        self.labels, self.comment_labels = self.like_range_bins([0, 10, 100, 1000, 10000, 100000, 1000000])
+        # spacy english tokenizer
         self.spacy_en = spacy.load('en_core_web_sm')
 
-        self.comment_parser = Field(sequential=True, use_vocab=True, lower=True, tokenize=self.tokenize)#, init_token='<sos>', eos_token='<eos>', dtype=torch.long)
+        # parsing fields
+        self.comment_parser = Field(sequential=True, use_vocab=True, lower=True, tokenize=self.tokenize, init_token="<sos>", eos_token="<eos>", pad_token="<pad>", unk_token="<unk>")
+        self.video_name_parser = Field(sequential=False, use_vocab=True, tokenize=self.tokenize)
+        self.channel_parser = Field(sequential=False, use_vocab=True)
+        #self.user_parser = Field(sequential=True, use_vocab=True, tokenize=lambda x: [char for char in x], init_token="<sos>", eos_token="<eos>", pad_token="<pad>", unk_token="<unk>")
+        self.other_parser = Field(sequential=False, use_vocab=False)
         self.label_parser = Field(sequential=False, use_vocab=False)
-        field = {'Video Name': ('VideoName', self.label_parser),
-                 'Channel Name': ('ChannelName', self.label_parser),
-                 'Comment Id': ('CommentId', self.label_parser),
-                 'User Name': ('UserName', self.label_parser),
-                 'Comment': ('Comment', self.comment_parser),
-                 'Date': ('Date', self.label_parser),
-                 'Likes': ('Likes', self.label_parser),
-                 }
 
-        sets = TabularDataset(path='data/youtube_dataset.csv', format='csv', fields=field)
-        self.comment_parser.build_vocab(sets, min_freq=2)
-        train_size = round(0.7*len(sets))
-        test_size = round(0.2*len(sets))
-        valid_size = len(sets) - test_size - train_size
-        train, validation, test = random_split(sets, [train_size, valid_size, test_size])
-        self.train_iter, self.valid_iter, self.test_iter = BucketIterator.splits((train, validation, test), batch_size=4, sort=False) #, device=device) , self.validation_set, self.test_set
+        field = {'Comment': ('c', self.comment_parser),
+                 'Video Name': ('vn', self.video_name_parser),
+                 'Channel Name': ('cn', self.channel_parser),
+                 #'User Name': ('un', self.user_parser),
+                 'Date': ('d', self.other_parser),
+                 'Likes': ('y', self.label_parser)}
 
-        self.channel_dict = dict()
-        self.video_dict = dict()
-        video_idx, channel_idx = 0, 0
-        for vid in self._other_details:
-            if vid[0] not in self.video_dict:
-                self.video_dict[vid[0]] = video_idx
-                video_idx += 1
-            if vid[1] not in self.channel_dict:
-                self.channel_dict[vid[1]] = channel_idx
-                channel_idx += 1
+        # dataset
+        self.sets = TabularDataset(path='data/youtube_dataset.csv', format='csv', fields=field)
+
+        train, test = self.sets.split(split_ratio=0.7)
+        test, validation = test.split(split_ratio=0.66)
+        self.comment_parser.build_vocab(self.sets, min_freq=2)
+        self.video_name_parser.build_vocab(self.sets)
+        self.channel_parser.build_vocab(self.sets)
+        #self.user_parser.build_vocab(self.sets)
+        self.comment_dict = self.comment_parser.vocab.stoi
+        self.channel_dict = self.channel_parser.vocab.stoi
+        self.video_dict = self.video_name_parser.vocab.stoi
+        #self.user_dict = self.user_parser.vocab.stoi
+
+        self.update_to_tensors()
+
+        self.train_iter, self.valid_iter, self.test_iter = BucketIterator.splits((train, validation, test), batch_size=4, sort_key=lambda x: len(x.c), sort=False, sort_within_batch=True)
+        self.train_iter.create_batches()
+        self.valid_iter.create_batches()
+        self.test_iter.create_batches()
 
     def tokenize(self, text):
         return [token.text for token in self.spacy_en.tokenizer(text)]
 
-    def like_range_bins(self, max_values):
-        bins = {k: [] for k in max_values}
-        likes_label = [None for _ in range(len(self._likes))]
-        for comment, n in enumerate(self._likes):
-            key = min(x for x in max_values if x >= n)
-            bins[key].append(comment)
-            likes_label[comment] = key
-        return bins, likes_label
+    def update_to_tensors(self):
+        for exp in self.sets.examples:
+            # change exact like number to bins (output)
+            for b in range(6):
+                if int(exp.y) // 10**b == 0:
+                    exp.y = torch.tensor(b)
+                    break
+            if type(exp.y) == str:
+                exp.y = torch.tensor(6)
+
+            # change string of time to date tensor
+            arr = re.split(r"[-T:Z]+", exp.d)[:-1]
+            arr = [int(x) for x in arr]
+            exp.d = torch.tensor(arr)
+
+            # string comment to vocabulary indexes
+            exp.c = torch.tensor([self.comment_dict[x] for x in exp.c])
+
+            # channel+video name to index
+            exp.cn = torch.tensor(self.channel_dict[exp.cn])
+            exp.vn = torch.tensor(self.video_dict[exp.vn])
+
+            # user name to tensor
+            #exp.un = torch.tensor([self.user_dict[x] for x in exp.un])
 
     def index_to_video_name(self, index):
         return list(self.video_dict)[index]
@@ -77,23 +93,7 @@ class CommentDataset(Dataset):
         return len(self._comments)
 
 
+data_file = "data/youtube_dataset.csv"
 dataset = CommentDataset(data_file)
-print(dataset.train_set)
-
-# train_loader = DataLoader(dataset=train, batch_size=4, shuffle=True)
-# valid_loader = DataLoader(dataset=validation, batch_size=4, shuffle=True)
-# test_loader = DataLoader(dataset=test, batch_size=4, shuffle=False)
-# x = next(iter(train_loader))
-# parser = Field(sequential=True, use_vocab=True, lower=True, init_token='<sos>', eos_token='<eos>', dtype=torch.long)
-# sentences = [sen.split() for sen in list(x[0][0])]
-# parser.build_vocab(train)
-# padded = parser.pad(sentences)
-# print(list(x[0][0]))
-# print(padded)
-
-# x[0][0] - tuple of comments in batch
-# x[0][1][0] - tuple of video names in batch
-# x[0][1][1] - tuple of chanel names
-# x[0][1][2] - tuple of names of comment writers
-# x[0][1][3] - time of comment
-
+for b in dataset.test_iter:
+    x = b.c
