@@ -1,8 +1,10 @@
+import spacy as spacy
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import random_split
 import pandas as pd
 import torch
 from torchtext.legacy.data import Field, TabularDataset, BucketIterator, NestedField
+import spacy
 
 data_file = "data/youtube_dataset.csv"
 
@@ -13,13 +15,30 @@ class CommentDataset(Dataset):
         self._data = pd.read_csv(csv_file, error_bad_lines=False)
         self._comments = self._data['Comment']
         self._comments = self._comments.values.tolist()
-
-        self.parser = Field(sequential=True, use_vocab=True, lower=True, init_token='<sos>', eos_token='<eos>', dtype=torch.long)
-
         self._other_details = self._data[['Video Name', 'Channel Name', 'User Name', 'Date']].values.tolist()
         self._likes = self._data['Likes'].values.tolist()
 
         self.labels, self.comment_labels = self.like_range_bins([0, 10, 100, 1000, 10000, 100000, 1000000])
+        self.spacy_en = spacy.load('en_core_web_sm')
+
+        self.comment_parser = Field(sequential=True, use_vocab=True, lower=True, tokenize=self.tokenize)#, init_token='<sos>', eos_token='<eos>', dtype=torch.long)
+        self.label_parser = Field(sequential=False, use_vocab=False)
+        field = {'Video Name': ('VideoName', self.label_parser),
+                 'Channel Name': ('ChannelName', self.label_parser),
+                 'Comment Id': ('CommentId', self.label_parser),
+                 'User Name': ('UserName', self.label_parser),
+                 'Comment': ('Comment', self.comment_parser),
+                 'Date': ('Date', self.label_parser),
+                 'Likes': ('Likes', self.label_parser),
+                 }
+
+        sets = TabularDataset(path='data/youtube_dataset.csv', format='csv', fields=field)
+        self.comment_parser.build_vocab(sets, min_freq=2)
+        train_size = round(0.7*len(sets))
+        test_size = round(0.2*len(sets))
+        valid_size = len(sets) - test_size - train_size
+        train, validation, test = random_split(sets, [train_size, valid_size, test_size])
+        self.train_iter, self.valid_iter, self.test_iter = BucketIterator.splits((train, validation, test), batch_size=4, sort=False) #, device=device) , self.validation_set, self.test_set
 
         self.channel_dict = dict()
         self.video_dict = dict()
@@ -31,6 +50,9 @@ class CommentDataset(Dataset):
             if vid[1] not in self.channel_dict:
                 self.channel_dict[vid[1]] = channel_idx
                 channel_idx += 1
+
+    def tokenize(self, text):
+        return [token.text for token in self.spacy_en.tokenizer(text)]
 
     def like_range_bins(self, max_values):
         bins = {k: [] for k in max_values}
@@ -56,20 +78,18 @@ class CommentDataset(Dataset):
 
 
 dataset = CommentDataset(data_file)
-train_size = round(0.7*len(dataset))
-test_size = round(0.2*len(dataset))
-valid_size = len(dataset) - test_size - train_size
-train, validation, test = random_split(dataset, [train_size, valid_size, test_size])
-train_loader = DataLoader(dataset=train, batch_size=4, shuffle=True)
-valid_loader = DataLoader(dataset=validation, batch_size=4, shuffle=True)
-test_loader = DataLoader(dataset=test, batch_size=4, shuffle=False)
-x = next(iter(train_loader))
-parser = Field(sequential=True, use_vocab=True, lower=True, init_token='<sos>', eos_token='<eos>', dtype=torch.long)
-sentences = [sen.split() for sen in list(x[0][0])]
-parser.build_vocab(train)
-padded = parser.pad(sentences)
-print(list(x[0][0]))
-print(padded)
+print(dataset.train_set)
+
+# train_loader = DataLoader(dataset=train, batch_size=4, shuffle=True)
+# valid_loader = DataLoader(dataset=validation, batch_size=4, shuffle=True)
+# test_loader = DataLoader(dataset=test, batch_size=4, shuffle=False)
+# x = next(iter(train_loader))
+# parser = Field(sequential=True, use_vocab=True, lower=True, init_token='<sos>', eos_token='<eos>', dtype=torch.long)
+# sentences = [sen.split() for sen in list(x[0][0])]
+# parser.build_vocab(train)
+# padded = parser.pad(sentences)
+# print(list(x[0][0]))
+# print(padded)
 
 # x[0][0] - tuple of comments in batch
 # x[0][1][0] - tuple of video names in batch
