@@ -16,15 +16,17 @@ def batch_loop():
 # function which calculate the accuracy of the model and return it
 def calculate_acc(dataset, dataset_iter, model):
     n_correct, n_total = 0, 0
-    context = model.init_context(dataset.batch_size)
+    comment_context, un_context = model.init_context()
     for batch_data in dataset_iter:
+        if batch_data.c.shape[1] != dataset.batch_size:
+            break
         with torch.no_grad():
-            pred = model(batch_data.comments, context, batch_data.features)
+            pred = model(batch_data, comment_context, un_context)
             # calculate output and get the prediction
             pred = torch.squeeze(pred)
             predictions = torch.argmax(pred, dim=1)
-            n_correct += torch.sum(predictions == batch_data.labels).type(torch.float32)
-            n_total += batch_data.shape[0]  # ??
+            n_correct += torch.sum(predictions == batch_data.y).type(torch.float32)
+            n_total += batch_data.c.shape[1]  # ??
     acc = (n_correct / n_total).item()
     return acc
 
@@ -40,7 +42,7 @@ def plot_results(x, data, labels, test_acc=None):
 
 
 def train(dataset, model, name, max_epochs=1000):
-    best, best_epoch, patience = np.inf, 0, 10
+    best, best_epoch, patience, clip_grad = np.inf, 0, 10, 1
     training_acc, validation_acc, training_loss, validation_loss = [], [], [], []
 
     criterion = nn.CrossEntropyLoss()
@@ -57,13 +59,18 @@ def train(dataset, model, name, max_epochs=1000):
                 iter = dataset.valid_iter
                 model.eval()
             epoch_losses = []
-            context = model.init_context()
+            comment_context, un_context = model.init_context()
 
-            for batch in iter:
-                y_pred = model(batch.comments, context, batch.features)
-                loss = criterion(y_pred, batch.labels)
+            for i, batch in enumerate(iter):
+                if batch.c.shape[1] != dataset.batch_size:
+                    break
+                print(i, '/', len(iter))
+                y_pred = model(batch, comment_context, un_context)
+                loss = criterion(y_pred, batch.y)
                 if state == 'train':
                     loss.backward()
+                    if clip_grad >0:
+                        nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
                     optimizer.step()
                 epoch_losses.append(loss.detach())
             if state == 'train':
@@ -75,7 +82,7 @@ def train(dataset, model, name, max_epochs=1000):
                 validation_loss.append(val_epoch_loss)
 
         # calculate training and validation accuracy
-        val_acc = calculate_acc(dataset, dataset.val_iter, model)
+        val_acc = calculate_acc(dataset, dataset.valid_iter, model)
         train_acc = calculate_acc(dataset, dataset.train_iter, model)
         validation_acc.append(val_acc)
         training_acc.append(train_acc)
