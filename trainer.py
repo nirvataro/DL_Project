@@ -2,14 +2,10 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
-import dataset
 from torch.optim import Adam
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def batch_loop():
-    pass
 
 
 # Auxiliary Functions:
@@ -21,12 +17,12 @@ def calculate_acc(dataset, dataset_iter, model):
         if batch_data.c.shape[1] != dataset.batch_size:
             break
         with torch.no_grad():
-            pred = model(batch_data, comment_context, un_context)
+            pred = model(batch_data, comment_context.to(device), un_context.to(device))
             # calculate output and get the prediction
             pred = torch.squeeze(pred)
             predictions = torch.argmax(pred, dim=1)
             n_correct += torch.sum(predictions == batch_data.y).type(torch.float32)
-            n_total += batch_data.c.shape[1]  # ??
+            n_total += batch_data.c.shape[1]
     acc = (n_correct / n_total).item()
     return acc
 
@@ -41,7 +37,7 @@ def plot_results(x, data, labels, test_acc=None):
         print('Test Accuracy: {}'.format(test_acc))
 
 
-def train(dataset, model, name, max_epochs=1000):
+def train(dataset, model, name, device, max_epochs=1000):
     best, best_epoch, patience, clip_grad = np.inf, 0, 10, 1
     training_acc, validation_acc, training_loss, validation_loss = [], [], [], []
 
@@ -66,10 +62,10 @@ def train(dataset, model, name, max_epochs=1000):
                     break
                 print(i, '/', len(iter))
                 y_pred = model(batch, comment_context, un_context)
-                loss = criterion(y_pred, batch.y)
+                loss = criterion(y_pred, batch.y.to(device))
                 if state == 'train':
                     loss.backward()
-                    if clip_grad >0:
+                    if clip_grad > 0:
                         nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
                     optimizer.step()
                 epoch_losses.append(loss.detach())

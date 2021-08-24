@@ -1,5 +1,3 @@
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data import random_split
 import torch
 from torchtext.legacy.data import Field, TabularDataset, BucketIterator, NestedField
 import spacy
@@ -7,7 +5,7 @@ import re
 
 
 class CommentDataset:
-    def __init__(self, csv_file, batch_size=4):
+    def __init__(self, csv_file, device, batch_size=4):
         self.batch_size = batch_size
         # spacy english tokenizer
         self.spacy_en = spacy.load('en_core_web_sm')
@@ -30,7 +28,6 @@ class CommentDataset:
 
         # dataset
         self.sets = TabularDataset(path=csv_file, format='csv', fields=field)
-
         for exp in self.sets.examples:
             # change exact like number to bins (output)
             for b in range(6):
@@ -51,7 +48,7 @@ class CommentDataset:
         self.video_dict = self.video_name_parser.vocab.stoi
         self.user_dict = self.user_parser.vocab.stoi
 
-        self.train_iter, self.valid_iter, self.test_iter = BucketIterator.splits((train, validation, test), batch_size=self.batch_size, sort_key=lambda x: len(x.c), sort=False, sort_within_batch=True)
+        self.train_iter, self.valid_iter, self.test_iter = BucketIterator.splits((train, validation, test), batch_size=self.batch_size, sort_key=lambda x: len(x.c), sort=False, sort_within_batch=True, device=device)
         self.train_iter.create_batches()
         self.valid_iter.create_batches()
         self.test_iter.create_batches()
@@ -68,8 +65,3 @@ class CommentDataset:
 
     def index_to_channel(self, index):
         return list(self.channel_dict)[index]
-
-
-
-data_file = "data/youtube_dataset.csv"
-
