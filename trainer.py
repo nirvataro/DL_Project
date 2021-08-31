@@ -1,29 +1,39 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import numpy as np
 from torch.optim import Adam
-
-
-
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sn
 
 
 # Auxiliary Functions:
 # function which calculate the accuracy of the model and return it
-def calculate_acc(dataset, dataset_iter, model):
-    n_correct, n_total = 0, 0
+def calculate_acc(dataset, dataset_iter, model, test_flag=False):
     comment_context, un_context = model.init_context()
+    g_true = []
+    predictions = []
+
     for batch_data in dataset_iter:
         if batch_data.c.shape[1] != dataset.batch_size:
             break
         with torch.no_grad():
-            pred = model(batch_data, comment_context.to(device), un_context.to(device))
+            pred = model(batch_data, comment_context, un_context)
             # calculate output and get the prediction
             pred = torch.squeeze(pred)
-            predictions = torch.argmax(pred, dim=1)
-            n_correct += torch.sum(predictions == batch_data.y).type(torch.float32)
-            n_total += batch_data.c.shape[1]
-    acc = (n_correct / n_total).item()
+            predictions.extend(torch.argmax(pred, dim=1).cpu().numpy())
+            g_true.extend(batch_data.y.cpu().numpy())
+    if test_flag:
+        print("g_true\n", g_true, "\n")
+        print("predictions\n", predictions, "\n")
+        conf_mat = confusion_matrix(g_true, predictions, labels=[0, 1, 2, 3, 4, 5])
+        df_cm = pd.DataFrame(conf_mat, index=[i for i in "012345"],
+                             columns=[i for i in "012345"])
+        plt.figure(figsize=(6, 6))
+        sn.heatmap(df_cm, annot=True)
+
+    acc = (np.array(predictions) == np.array(g_true)).sum() / len(predictions)
     return acc
 
 
@@ -42,8 +52,8 @@ def train(dataset, model, name, device, max_epochs=1000):
     training_acc, validation_acc, training_loss, validation_loss = [], [], [], []
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = Adam(model.parameters(), lr=0.01)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)  # lr decrease
+    optimizer = Adam(model.parameters(), lr=0.001)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)  # lr decrease
 
     for epoch in range(max_epochs):
         for state in ['train', 'validation']:
@@ -60,7 +70,6 @@ def train(dataset, model, name, device, max_epochs=1000):
             for i, batch in enumerate(iter):
                 if batch.c.shape[1] != dataset.batch_size:
                     break
-                print(i, '/', len(iter))
                 y_pred = model(batch, comment_context, un_context)
                 loss = criterion(y_pred, batch.y.to(device))
                 if state == 'train':
@@ -107,4 +116,5 @@ def train(dataset, model, name, device, max_epochs=1000):
     # plot training, validation accuracy
     data = [training_acc, validation_acc]
     labels = ["Training Accuracy", "Validation Accuracy"]
-    plot_results(epoch + 1, data, labels, calculate_acc(dataset, dataset.test_iter, model))
+    test_accuracy = calculate_acc(dataset, dataset.test_iter, model, test_flag=True)
+    plot_results(epoch + 1, data, labels, test_accuracy)
